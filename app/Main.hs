@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 module Main where
 
 import           Control.Monad.Trans.Free
@@ -31,30 +32,31 @@ data CraftDSL next
   deriving Functor
 
 
-newtype Craft a = Craft { unCraft :: ReaderT CraftEnv (FreeT CraftDSL IO) a }
+newtype Craft a = Craft { unCraft :: ReaderT CraftEnv (FreeT CraftDSL (LoggingT IO)) a }
   deriving ( Functor, Monad, MonadIO, Applicative
-           , MonadReader CraftEnv, MonadFree CraftDSL, MonadThrow)
+           , MonadReader CraftEnv, MonadFree CraftDSL, MonadThrow, MonadLogger)
 
 
--- instance MonadLogger (FreeT CraftDSL IO) where
---   monadLoggerLog a b c d = Trans.lift $ monadLoggerLog a b c d
+instance (MonadLogger m, Functor f) => MonadLogger (FreeT f m) where
+  monadLoggerLog a b c d = Trans.lift $ monadLoggerLog a b c d
 
 
 
-interpretCraft :: CraftEnv -> (CraftDSL (IO a) -> IO a) -> Craft a -> IO a
+interpretCraft :: CraftEnv -> (CraftDSL (LoggingT IO a) -> LoggingT IO a) -> Craft a -> LoggingT IO a
 interpretCraft ce interpreter = iterT interpreter . flip runReaderT ce . unCraft
 
-runCraftLocal :: CraftEnv -> Craft a -> IO a
+runCraftLocal :: CraftEnv -> Craft a -> LoggingT IO a
 runCraftLocal ce' = interpretCraft ce' run
  where
   run (Exec ce cmd args next) = do
-    putStrLn $ unwords ("Exec":cmd:args)
+    logDebugN "logging in exec"
+    Trans.lift $ putStrLn $ unwords ("Exec":cmd:args)
     next True
   run (FileWrite ce fp s next ) = do
-    putStrLn $ unwords ["FileWrite", fp, s]
+    Trans.lift $ putStrLn $ unwords ["FileWrite", fp, s]
     next
   run (FileRead ce fp next) = do
-    putStrLn $ unwords ["FileRead", fp]
+    Trans.lift $ putStrLn $ unwords ["FileRead", fp]
     next "derp"
 
 
@@ -81,6 +83,7 @@ myscript = do
   herpderp <- fileRead "/foobar"
   fileWrite "/foo/bar/baz" "foobar"
   exec "foo" ["bar", "baz"]
+  logInfoN "logging in the script"
   throwM MyError
   return True
 
@@ -91,6 +94,6 @@ instance Exception MyError
 
 main :: IO ()
 main = do
-  r <- runCraftLocal (CraftEnv []) myscript
+  r <- runStdoutLoggingT $ runCraftLocal (CraftEnv []) myscript
   print r
   return ()
